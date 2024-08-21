@@ -131,6 +131,7 @@ namespace PMCDash.Controllers
                                 SELECT 
                                     [OrderID],
                                     [OPID],
+                                    [WIPEvent],
                                     [DeviceID],
                                     CONVERT(date, CreateTime) AS Date,
                                     CreateTime,
@@ -152,7 +153,9 @@ namespace PMCDash.Controllers
                                     OrderedData.DeviceID = b.remark
                                 WHERE 
                                     b.external_com = 0 
-                                    AND PreviousTime IS NOT NULL 
+                                    AND PreviousTime IS NOT NULL
+                                    -- 僅有狀態為暫停或完工，這段時間才有加工
+                                    AND WIPEvent in (2,3)
                                     AND DATEDIFF(MINUTE, PreviousTime, CreateTime) > 0
                                     AND b.SkyMars_connect = 0
                             ),
@@ -359,7 +362,7 @@ namespace PMCDash.Controllers
                                 WHERE 
                                     MachineStatus IN (1, 2, 3) 
                                     AND b.SkyMars_connect = 1
-                                    AND [DatabaseDate] >= CONVERT(date, DATEADD(DAY, -7, GETDATE()))
+                                    AND [DatabaseDate] >= CONVERT(date, DATEADD(DAY, -{days-1}, GETDATE()))
                                     AND [DatabaseDate] < CONVERT(date, GETDATE())
                                 GROUP BY 
                                     [DatabaseDate], 

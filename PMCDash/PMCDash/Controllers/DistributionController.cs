@@ -291,23 +291,35 @@ namespace PMCDash.Controllers
             double idle = 0;
             double alarm = 0;
             double off = 0;
-            var devices = new List<DeviceList>();
+            var devices = new List<MachineStatus>();
 
             #region 由實際生產資料統計廠區機台狀態
             //取得工單資料
-            var sqlStr = @$"SELECT
-	                            b.remark,
-                                a.WorkOrderID,
-                                a.OPID,
-	                            c.MAKTX
-                                
-                            FROM
-                               {_ConnectStr.APSDB}.[dbo].[WipRegisterLog] AS a
-                            LEFT JOIN
-                                {_ConnectStr.APSDB}.[dbo].[Device] AS b ON a.DeviceID = b.ID
-                            LEFT JOIN
-                                {_ConnectStr.APSDB}.[dbo].[Assignment] AS c ON a.WorkOrderID = c.OrderID AND a.OPID = c.OPID
-                            WHERE b.remark is not null and b.external_com=0";
+            var sqlStr = @$"-- 從 skymars 來
+                        SELECT 
+                            a.DeviceID,
+                            a.DeviceStatus
+                        FROM 
+                            {_ConnectStr.SkyMarsDB}.[dbo].[DeviceCurrentStatus] AS a
+                        LEFT JOIN 
+                            {_ConnectStr.APSDB}.[dbo].[Device] AS d ON a.DeviceID = d.remark
+                        WHERE 
+                            d.SkyMars_connect = 1
+
+                        UNION ALL
+
+                        -- 從 MES 來
+                        SELECT b.remark as DeviceID ,
+	                    CASE 
+	                     WHEN a.WorkOrderID is null THEN 'IDLE'
+	                     WHEN a.WorkOrderID is not null THEN 'RUN'
+	                     ELSE 'Unknown Status'
+	                     END AS DeviceStatus
+	                      FROM {_ConnectStr.APSDB}.[dbo].[WipRegisterLog] as a
+	                      INNER JOIN {_ConnectStr.APSDB}.[dbo].[Device] as b
+	                      on a.DeviceID = b.ID
+	                    where b.SkyMars_connect=0 and b.external_com=0
+                    ";
             using (var conn = new SqlConnection(_ConnectStr.Local))
             {
                 using (var comm = new SqlCommand(sqlStr, conn))
@@ -321,11 +333,9 @@ namespace PMCDash.Controllers
                             while (SqlData.Read())
                             {
 
-                                devices.Add(new DeviceList(
-                                    remark: SqlData["remark"].ToString().Trim(),
-                                    workorderID: SqlData["WorkOrderID"].ToString().Trim(),
-                                    opid: SqlData["OPID"].ToString().Trim(),
-                                    maktx: SqlData["MAKTX"].ToString().Trim()
+                                devices.Add(new MachineStatus(
+                                    machineName: SqlData["DeviceID"].ToString().Trim(),
+                                    status: SqlData["DeviceStatus"].ToString().Trim()
 
                                     ));
 
@@ -335,29 +345,13 @@ namespace PMCDash.Controllers
                 }
             }
 
-            var status = new string[] { "RUN", "IDLE", "ALARM", "OFF" };
-            foreach (var item in devices)
-            {
-                if(!string.IsNullOrEmpty(item.MAKTX))
-                {
-                    run += 1;
-                }
-                else
-                {
-                    idle += 1;
-                }
-            }
+            run = devices.Exists(x=>x.Status == "RUN")?devices.Where(x => x.Status == "RUN").Count() : 0;
+            idle = devices.Exists(x => x.Status == "IDLE") ? devices.Where(x => x.Status == "IDLE").Count() : 0;
+            alarm = devices.Exists(x => x.Status == "ALARM") ? devices.Where(x => x.Status == "ALARM").Count() : 0;
+            off = devices.Exists(x => x.Status == "OFF") ? devices.Where(x => x.Status == "OFF").Count() : 0;
+
             #endregion
 
-
-            //////////////////////////////////////////////////////////////
-            //Random random = new Random();
-            //// 隨機生成 run 和 idle 的數字
-            //double run = Math.Round((random.NextDouble() * 0.2 + 0.5) * 100,1);
-            //double idle = Math.Round((random.NextDouble() * 0.1 + 0.2) * 100,1);
-            //// 計算 alarm 和 off，確保總和為100
-            //double alarm = Math.Round( random.NextDouble() * (100 - run - idle),1);
-            //double off = 100 - run - idle - alarm;
             /////////////////////////////////////////////////////////////
             // 將結果封裝到 StatusDistribution 對象中
             StatusDistribution statusDistribution = new StatusDistribution
@@ -373,16 +367,6 @@ namespace PMCDash.Controllers
             {
                 Data = statusDistribution
             };
-            //return new ActionResponse<StatusDistribution>
-            //{
-            //    Data = new StatusDistribution
-            //        (
-            //            run: 52.3m,
-            //            idle: 27.8m,
-            //            alarm: 16.7m,
-            //            off: 3.2m
-            //        )
-            //};
         }
 
     }

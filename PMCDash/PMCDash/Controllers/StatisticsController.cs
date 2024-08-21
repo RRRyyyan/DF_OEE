@@ -243,22 +243,34 @@ namespace PMCDash.Controllers
         {
             var result = new List<MachineStatus>();
 
-            var devices = new List<DeviceList>();
+            var devices = new List<MachineStatus>();
 
             #region 撈取機台編號資料
             //取得工單資料
-            var sqlStr = @$"SELECT
-	                            b.remark,
-                                a.WorkOrderID,
-                                a.OPID,
-	                            c.MAKTX
-                            FROM
-                               {_ConnectStr.APSDB}.[dbo].[WipRegisterLog] AS a
-                            LEFT JOIN
-                                {_ConnectStr.APSDB}.[dbo].[Device] AS b ON a.DeviceID = b.ID
-                            LEFT JOIN
-                                {_ConnectStr.APSDB}.[dbo].[Assignment] AS c ON a.WorkOrderID = c.OrderID AND a.OPID = c.OPID
-                            WHERE b.remark is not null";
+            var sqlStr = @$"-- 從 skymars 來
+                        SELECT 
+                            a.DeviceID,
+                            a.DeviceStatus
+                        FROM 
+                            {_ConnectStr.SkyMarsDB}.[dbo].[DeviceCurrentStatus] AS a
+                        LEFT JOIN 
+                            {_ConnectStr.APSDB}.[dbo].[Device] AS d ON a.DeviceID = d.remark
+                        WHERE 
+                            d.SkyMars_connect = 1
+
+                        UNION ALL
+
+                        -- 從 MES 來
+                        SELECT b.remark as DeviceID ,
+	                    CASE 
+	                     WHEN a.WorkOrderID is null THEN 'IDLE'
+	                     WHEN a.WorkOrderID is not null THEN 'RUN'
+	                     ELSE 'Unknown Status'
+	                     END AS DeviceStatus
+	                      FROM {_ConnectStr.APSDB}.[dbo].[WipRegisterLog] as a
+	                      INNER JOIN {_ConnectStr.APSDB}.[dbo].[Device] as b
+	                      on a.DeviceID = b.ID
+	                    where b.SkyMars_connect=0 and b.external_com=0";
             using (var conn = new SqlConnection(_ConnectStr.Local))
             {
                 using (var comm = new SqlCommand(sqlStr, conn))
@@ -272,12 +284,9 @@ namespace PMCDash.Controllers
                             while (SqlData.Read())
                             {
 
-                                devices.Add(new DeviceList(
-                                    remark : SqlData["remark"].ToString().Trim(),
-                                    workorderID : SqlData["WorkOrderID"].ToString().Trim(),
-                                    opid: SqlData["OPID"].ToString().Trim(),
-                                    maktx: SqlData["MAKTX"].ToString().Trim()
-
+                                result.Add(new MachineStatus(
+                                    machineName: SqlData["DeviceID"].ToString().Trim(),
+                                    status: SqlData["DeviceStatus"].ToString().Trim()
                                     ));
 
                             };
@@ -287,23 +296,7 @@ namespace PMCDash.Controllers
             }
             #endregion
 
-            var status = new string[] { "RUN", "IDLE", "ALARM", "OFF" };
-            foreach(var item in devices)
-            {
-                result.Add(new MachineStatus
-                (
-                    machineName : item.Remark,
-                    status : !String.IsNullOrEmpty(item.MAKTX)?"RUN":"IDLE"
-                ));
-            }
-            //for (int i = 0; i < 20; i++)
-            //{
-            //    result.Add(new MachineStatus
-            //    (
-            //        $@"CNC-{i + 1,2:00}",
-            //        status[(i + 1) % 4]
-            //    ));
-            //}
+           
             return new ActionResponse<ProductionLineMachineImformation>
             {
                 Data = new ProductionLineMachineImformation(result)
