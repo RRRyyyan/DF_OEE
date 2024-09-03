@@ -1,6 +1,6 @@
 # DF_OEE
 ## 2024.09.03 Updates
-# DeviceInfo
+## DeviceInfo
 ### A. 未聯網
 * 總時間=8:00AM~Now
 * 取WIPLog紀錄
