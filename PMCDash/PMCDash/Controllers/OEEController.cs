@@ -1,13 +1,11 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using PMCDash.Models;
-using System.Linq;
-using System.Collections;
 using System;
 using System.Collections.Generic;
-using Microsoft.AspNetCore.Authorization;
-using System.Globalization;
 using System.Data;
 using System.Data.SqlClient;
+using System.Globalization;
+using System.Linq;
 
 namespace PMCDash.Controllers
 {
@@ -61,7 +59,7 @@ namespace PMCDash.Controllers
                                 SELECT 
                                     CONVERT(date, CreateTime) AS Date,
                                     DeviceID,
-                                    DATEDIFF(MINUTE, MIN(CreateTime), MAX(CreateTime)) - 60 AS ActualRUN
+                                    DATEDIFF(MINUTE, MIN(CreateTime), MAX(CreateTime)) AS ActualRUN
                                 FROM 
                                     {_ConnectStr.APSDB}.[dbo].[WIPLog]
                                 INNER JOIN 
@@ -69,7 +67,7 @@ namespace PMCDash.Controllers
                                 ON 
                                     {_ConnectStr.APSDB}.[dbo].[WIPLog].DeviceID = b.remark
                                 WHERE 
-                                    b.external_com = 0
+                                    b.external_com = 0 AND b.SkyMars_connect = 0
                                 GROUP BY 
                                     CONVERT(date, CreateTime), 
                                     DeviceID
@@ -135,7 +133,7 @@ namespace PMCDash.Controllers
                                     [DeviceID],
                                     CONVERT(date, CreateTime) AS Date,
                                     CreateTime,
-                                    LAG(CreateTime) OVER (PARTITION BY [OrderID], [OPID], [DeviceID], CONVERT(date, CreateTime) ORDER BY CreateTime) AS PreviousTime
+                                    LAG(CreateTime) OVER (PARTITION BY [DeviceID], CONVERT(date, CreateTime) ORDER BY CreateTime) AS PreviousTime
                                 FROM 
                                     {_ConnectStr.APSDB}.[dbo].[WIPLog]
                             ),
@@ -193,7 +191,7 @@ namespace PMCDash.Controllers
                                 TotalTime
                             FROM 
                                 WIPLogData
-                            WHERE TotalTime>60
+                           
                             UNION ALL
                             SELECT 
                                 DeviceID,
@@ -236,7 +234,7 @@ namespace PMCDash.Controllers
             #region 撈取良率、準交率資料
             //取得工單資料
             sqlStr = @$"
-                            -- 計算目前準交的工單數量
+                            -- 計算目前準交的工單數量(交期為今天以前)
                             -- 已完工且完工時間在預交日期前
                             DECLARE @TotalOrders INT
                             SELECT @TotalOrders = COUNT(DISTINCT a.OrderID)
@@ -256,7 +254,7 @@ namespace PMCDash.Controllers
                             SELECT @TotalGood = SUM(b.QtyGood)
                             FROM  {_ConnectStr.APSDB}.[dbo].[Assignment] AS a
                             LEFT JOIN  {_ConnectStr.APSDB}.[dbo].[WIP] AS b ON a.SeriesID = b.SeriesID
-                            WHERE b.QtyTol>0
+                            WHERE b.QtyTol>0 AND a.AssignDate <= DATEADD(DAY, DATEDIFF(DAY, 0, GETDATE()), 0)
             
                             -- 計算總工單數量
                             DECLARE @PastOrders INT
@@ -270,7 +268,7 @@ namespace PMCDash.Controllers
                             FROM  {_ConnectStr.APSDB}.[dbo].[Assignment] as a
                             LEFT JOIN  {_ConnectStr.APSDB}.[dbo].[WIP] as b
                             ON a.SeriesID = b.SeriesID
-                            WHERE b.QtyTol>0
+                            WHERE b.QtyTol>0 AND a.AssignDate <= DATEADD(DAY, DATEDIFF(DAY, 0, GETDATE()), 0)
 
 
                             -- 計算比率
@@ -304,7 +302,7 @@ namespace PMCDash.Controllers
             //計算各稼動率平均
             double performance_rate = double.MinValue;
             //時間稼動把實際運轉時間加總/(總機台數*8小時)
-            double AVG_AVA = availabilities.Sum(x => x.ActualRun) / (availabilities.Count() * 480);
+            double avg_availability = availabilities.Sum(x => x.ActualRun) / (availabilities.Count() * 60 * 11);
             List<double> avg_performance = new List<double>();
             //性能稼動紀錄(實際加工時間/實際運轉時間)
             foreach(var item in performances)
@@ -324,8 +322,8 @@ namespace PMCDash.Controllers
                 Data = new OEEOverView
                 (
 
-                    oEE: new OEERate(Math.Round(AVG_AVA * avg_performance.Average() * GoodYieldRate* 100d, 2), 60d),
-                    availbility: new AvailbilityRate(Math.Round(AVG_AVA * 100,2), 70d),
+                    oEE: new OEERate(Math.Round(avg_availability * avg_performance.Average() * GoodYieldRate* 100d, 2), 60d),
+                    availbility: new AvailbilityRate(Math.Round(avg_availability * 100,2), 70d),
                     performance: new PerformanceRate(Math.Round(avg_performance.Average() * 100,2), 97d),
                     yield: new YieldRate(Math.Round(GoodYieldRate * 100d, 2), 95d),
                     delivery: new DeliveryRate(Math.Round(OnTimeRate * 100d, 2), 97d)
@@ -372,7 +370,7 @@ namespace PMCDash.Controllers
                                 SELECT 
                                     CONVERT(date, CreateTime) AS Date,
                                     DeviceID,
-                                    DATEDIFF(MINUTE, MIN(CreateTime), MAX(CreateTime)) - 60 AS ActualRUN
+                                    DATEDIFF(MINUTE, MIN(CreateTime), MAX(CreateTime)) AS ActualRUN
                                 FROM 
                                     {_ConnectStr.APSDB}.[dbo].[WIPLog]
                                 INNER JOIN 
@@ -381,6 +379,7 @@ namespace PMCDash.Controllers
                                     {_ConnectStr.APSDB}.[dbo].[WIPLog].DeviceID = b.remark
                                 WHERE 
                                     b.external_com = 0
+                                    AND b.SkyMars_connect = 0
                                     AND CONVERT(date, CreateTime) >= CONVERT(date, DATEADD(DAY, -{days - 1}, GETDATE()))
                                     AND CONVERT(date, CreateTime) < CONVERT(date, GETDATE())
                                 GROUP BY 
@@ -402,12 +401,6 @@ namespace PMCDash.Controllers
                                 CTE2
                             WHERE 
                                 ActualRUN > 100
-                                AND EXISTS (
-                                    SELECT 1
-                                    FROM {_ConnectStr.APSDB}.[dbo].[Device] AS b
-                                    WHERE CTE2.DeviceID = b.remark
-                                        AND b.SkyMars_connect = 0
-                                )
                             ORDER BY 
                                 DeviceID, 
                                 Date;";
@@ -427,7 +420,7 @@ namespace PMCDash.Controllers
                                 (
                                     deviceid: (SqlData["DeviceID"].ToString().Trim()),
                                     date: Convert.ToDateTime(SqlData["Date"].ToString().Trim()),
-                                    actualrun: Convert.ToDouble(SqlData["TotalActualRUN"])
+                                    actualrun: Convert.ToDouble(SqlData["ActualRUN"])
                                 ));
                             };
                         }
@@ -446,7 +439,7 @@ namespace PMCDash.Controllers
                                     [DeviceID],
                                     CONVERT(date, CreateTime) AS Date,
                                     CreateTime,
-                                    LAG(CreateTime) OVER (PARTITION BY [OrderID], [OPID], [DeviceID], CONVERT(date, CreateTime) ORDER BY CreateTime) AS PreviousTime
+                                    LAG(CreateTime) OVER (PARTITION BY [DeviceID], CONVERT(date, CreateTime) ORDER BY CreateTime) AS PreviousTime
                                 FROM 
                                     {_ConnectStr.APSDB}.[dbo].[WIPLog]
                             ),
@@ -507,8 +500,7 @@ namespace PMCDash.Controllers
                                 TotalTime
                             FROM 
                                 WIPLogData
-                            WHERE 
-                                TotalTime > 60
+
                             UNION ALL
                             SELECT 
                                 DeviceID,
@@ -552,8 +544,8 @@ namespace PMCDash.Controllers
             foreach (var date in diffdate)
             {
                 List<double> performance_rate = new List<double>();
-                var samedaylist = availabilities.Where(x => x.Date == date);
-                avg_AVA[date] = (samedaylist.Select(x=>x.ActualRun).Sum())/(samedaylist.Count()*480);
+                var samedaylist = availabilities.Where(x => x.Date == date).ToList();
+                avg_AVA[date] = (samedaylist.Select(x=>x.ActualRun).Sum())/(samedaylist.Count()* 60 * 13);
                 foreach (var item in performances.Where(x=>x.Date==date))
                 {
                     if (availabilities.Exists(x=>x.DeviceID == item.DeviceID && x.Date == item.Date) )

@@ -24,10 +24,136 @@ namespace PMCDash.Controllers
         {
             Random rand = new Random();
             var tempinfo = new DeviceInfoTemp();
-            
+            var SkyMars_connect = String.Empty;
+            var Utilization_rate = 0.0;
+            //撈取機台是否聯網
+            var sqlStr = @$"SELECT [SkyMars_connect]
+                              FROM {_ConnectStr.APSDB}.[dbo].[Device]
+                              WHERE remark = '{device.DeviceName}';";
+            using (var conn = new SqlConnection(_ConnectStr.Local))
+            {
+                using (var comm = new SqlCommand(sqlStr, conn))
+                {
+                    if (conn.State != ConnectionState.Open)
+                        conn.Open();
+                    using (SqlDataReader SqlData = comm.ExecuteReader())
+                    {
+                        if (SqlData.HasRows)
+                        {
+                            while (SqlData.Read())
+                            {
+                                SkyMars_connect = SqlData["SkyMars_connect"].ToString();
+                            };
+                        }
+                    }
+                }
+            }
+
+            //撈取機台稼動率資訊
+            switch(SkyMars_connect)
+            {
+                //未聯網=>從MES撈
+                case "False":
+                    sqlStr = @$"DECLARE @TodayStart0800 DATETIME = DATEADD(HOUR, 8, CAST(CONVERT(DATE, GETDATE()) AS DATETIME));  -- 今天早上8:00
+                                DECLARE @CurrentTime DATETIME = GETDATE();  -- 當前時間
+                                DECLARE @TotalTimeInSeconds INT = DATEDIFF(SECOND, @TodayStart0800, @CurrentTime);
+                                ---- 顯示 TodayStart0800 的值
+                                --SELECT @TodayStart0800 AS TodayStart0800;
+                                --SELECT @TotalTimeInSeconds AS TotalTimeInSeconds;
+
+                                WITH OrderedData AS (
+                                    SELECT 
+                                        [OrderID],
+                                        [OPID],
+                                        [WIPEvent],
+                                        [DeviceID],
+                                        CONVERT(date, CreateTime) AS Date,
+                                        CreateTime,
+                                        LAG(CreateTime) OVER (PARTITION BY [DeviceID] ORDER BY CreateTime) AS PreviousTime,
+                                        ROW_NUMBER() OVER (PARTITION BY [DeviceID] ORDER BY CreateTime DESC) AS RowNum
+                                    FROM 
+                                        {_ConnectStr.APSDB}.[dbo].[WIPLog]
+                                    WHERE 
+                                        DeviceID = '{device.DeviceName}'
+		                                AND CreateTime >= @TodayStart0800  -- 只納入8:00之後的記錄
+		                                AND CreateTime < @CurrentTime  -- 確保記錄在當前時間之前
+                                ),
+                                TotalData AS(
+                                SELECT 
+                                    [OrderID],
+                                    [OPID],
+                                    [WIPEvent],
+                                    [DeviceID],
+                                    Date,
+                                    CreateTime,
+                                    PreviousTime,
+                                    RowNum,
+                                    CASE 
+                                        WHEN RowNum = 1 AND WIPEvent = 1 THEN DATEDIFF(SECOND, CreateTime, GETDATE())
+                                        WHEN RowNum != 1 AND WIPEvent = 1 THEN NULL
+                                        WHEN WIPEvent IN (2, 3) AND PreviousTime IS NULL THEN NULL  -- 新增判斷條件
+                                        ELSE DATEDIFF(SECOND, PreviousTime, CreateTime)
+                                    END AS ProcessingTime
+                                FROM 
+                                    OrderedData)
+                                select DeviceID AS MachineName,
+		                                SUM(ProcessingTime) as TotalRunTimeInSeconds,
+		                                CAST(SUM(ProcessingTime) AS FLOAT) / @TotalTimeInSeconds AS RunTimeRatio  -- 計算運行時間比例
+                                from TotalData
+                                GROUP BY 
+                                    DeviceID
+                                ORDER BY 
+                                    DeviceID;";
+                    break;
+                //聯網=>從skymars撈
+                case "True":
+                    sqlStr = @$"--聯網機台單機稼動率
+                                DECLARE @TodayStart0800 DATETIME = DATEADD(HOUR, 8, CAST(CONVERT(DATE, GETDATE()) AS DATETIME));  -- 今天早上8:00
+                                DECLARE @CurrentTime DATETIME = GETDATE();  -- 當前時間
+
+                                -- 計算今天早上8:00到目前的總時間（以秒為單位）
+                                DECLARE @TotalTimeInSeconds INT = DATEDIFF(SECOND, @TodayStart0800, @CurrentTime);
+
+                                -- 計算每個機台的實際運行時間和比例
+                                SELECT 
+                                    MachineName, 
+                                    SUM(Duration) AS TotalRunTimeInSeconds,
+                                    CAST(SUM(Duration) AS FLOAT) / @TotalTimeInSeconds AS RunTimeRatio  -- 計算運行時間比例
+                                FROM 
+                                    {_ConnectStr.SkyMarsDB}.[dbo].[UtilizationLog]
+                                WHERE 
+                                    DeviceStatus = 'RUN'
+                                    AND MachineName = '{device.DeviceName}'
+                                    AND StartDateTime >= @TodayStart0800  -- 只納入8:00之後的記錄
+                                    AND StartDateTime < @CurrentTime  -- 確保記錄在當前時間之前
+                                GROUP BY 
+                                    MachineName
+                                ORDER BY 
+                                    MachineName;";
+                    break;
+            }
+            using (var conn = new SqlConnection(_ConnectStr.Local))
+            {
+                using (var comm = new SqlCommand(sqlStr, conn))
+                {
+                    if (conn.State != ConnectionState.Open)
+                        conn.Open();
+                    using (SqlDataReader SqlData = comm.ExecuteReader())
+                    {
+                        if (SqlData.HasRows)
+                        {
+                            while (SqlData.Read())
+                            {
+                                Utilization_rate = Convert.ToDouble(SqlData["RunTimeRatio"]);
+                            };
+                        }
+                    }
+                }
+            }
+
             #region 撈取各機台生產資料
             //取得工單資料
-            var sqlStr = @$"SELECT
+            sqlStr = @$"SELECT
                             a.WIPEvent,
                             a.OrderID,
                             a.OPID,
@@ -124,7 +250,8 @@ namespace PMCDash.Controllers
                 {
                     Data = new OperationInfo
                 (
-                    utilizationRate: Math.Round((rand.NextDouble()*0.3+0.7)*100,1),
+                    utilizationRate: Math.Round(Utilization_rate * 100, 1),
+                    //utilizationRate: Math.Round((rand.NextDouble()*0.3+0.7)*100,1),
                     status: "RUN",
                     productionProgress: tempinfo.ProductionProgress,
                     customName: tempinfo.CustomName.Split('/')[1],
@@ -140,7 +267,8 @@ namespace PMCDash.Controllers
                 {
                     Data = new OperationInfo
                 (
-                    utilizationRate: Math.Round((rand.NextDouble() * 0.3 + 0.7) * 100, 1),
+                    //utilizationRate: Math.Round((rand.NextDouble() * 0.3 + 0.7) * 100, 1),
+                    utilizationRate: Math.Round(Utilization_rate * 100, 1),
                     status: "IDLE",
                     productionProgress: tempinfo.ProductionProgress,
                     customName: tempinfo.CustomName.Split('/')[1],
@@ -156,7 +284,8 @@ namespace PMCDash.Controllers
                 {
                     Data = new OperationInfo
                 (
-                    utilizationRate: Math.Round((rand.NextDouble() * 0.4 + 0.6) * 100, 1),
+                    //utilizationRate: Math.Round((rand.NextDouble() * 0.4 + 0.6) * 100, 1),
+                    utilizationRate: Math.Round(Utilization_rate * 100, 1),
                     status: "IDLE",
                     productionProgress: tempinfo.ProductionProgress,
                     customName: "-",
@@ -166,23 +295,6 @@ namespace PMCDash.Controllers
 
                 };
             }
-            //else 
-            //{
-            //    return new ActionResponse<OperationInfo>();
-            //}
-
-
-            //return new ActionResponse<OperationInfo>
-            //{
-            //    Data = new OperationInfo
-            //    (
-            //        utilizationRate: 85.9d, 
-            //        status: "RUN", 
-            //        productionProgress: 67.8d, 
-            //        customName: @"-",
-            //        orderInfo: new OrderInformation(orderNo: $@"10411110002", oPNo: 66, opName: "車牙",
-            //        productNo: $@"11110001", requireCount: 3000, currentCount:1500, dueDate: "2021-12-03"))
-            //};
         }
 
     }
